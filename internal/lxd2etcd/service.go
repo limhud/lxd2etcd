@@ -21,14 +21,12 @@ type Service struct {
 // NewService returns a new service instance.
 func NewService() (*Service, error) {
 	var (
-		err     error
 		service *Service
 	)
 	service = &Service{}
-	err = service.init()
-	if err != nil {
-		return nil, err
-	}
+	service.stopChan = make(chan struct{})
+	service.errorChan = make(chan error)
+	service.refreshChan = make(chan struct{})
 	return service, nil
 }
 
@@ -38,9 +36,6 @@ func (service *Service) init() error {
 		eventName    string
 		eventHandler *LxdEventHandler
 	)
-	service.stopChan = make(chan struct{})
-	service.errorChan = make(chan error)
-	service.refreshChan = make(chan struct{})
 	// initialize lxd listener
 	service.instanceServer, err = lxd.ConnectLXDUnix(config.GetLxd().Socket, nil)
 	if err != nil {
@@ -52,12 +47,12 @@ func (service *Service) init() error {
 		return stacktrace.Propagate(err, "fail to initialize lxd event listener")
 	}
 	// initialize listener handlers
-	for eventName, eventHandler = range DataMap {
+	for eventName, eventHandler = range LxdEventHandlers {
 		_, err = service.eventListener.AddHandler(eventHandler.Types, func(event api.Event) {
 			var (
 				err error
 			)
-			loggo.GetLogger("").Debugf("event <%s>/<%s>: <%s>", eventName, eventHandler.Types, LxdEventToString(event))
+			loggo.GetLogger("").Tracef("event <%s>/<%s>: <%s>", eventName, eventHandler.Types, LxdEventToString(event))
 			err = eventHandler.Handler(service.refreshChan, event)
 			if err != nil {
 				service.errorChan <- err
@@ -87,28 +82,48 @@ func (service *Service) ToggleDebug() {
 // Start the service.
 func (service *Service) Start() error {
 	var (
-		err error
+		err     error
+		lxdInfo *LxdInfo
 	)
+	go func() {
+		service.refreshChan <- struct{}{}
+	}()
 ServiceLoop:
 	for {
-		select {
-		case <-service.stopChan:
-			break ServiceLoop
-		case <-service.refreshChan:
-			loggo.GetLogger("").Infof("refresh triggered")
-			// TODO: trigger refresh for info in etcd
-		case err = <-service.errorChan:
+		err = service.init()
+		if err != nil {
 			break ServiceLoop
 		}
+	RefreshLoop:
+		for {
+			select {
+			case <-service.stopChan:
+				loggo.GetLogger("").Infof("stopping service...")
+				service.eventListener.Disconnect()
+				break ServiceLoop
+			case <-service.refreshChan:
+				loggo.GetLogger("").Infof("refresh triggered")
+				// TODO: trigger refresh for info in etcd
+				lxdInfo = &LxdInfo{}
+				err = lxdInfo.Populate(service.instanceServer)
+				if err != nil {
+					loggo.GetLogger("").Errorf(stacktrace.Propagate(err, "fail to obtain lxd infos").Error())
+				}
+				loggo.GetLogger("").Debugf("retrieved lxd info: <%#v>", lxdInfo)
+			case err = <-service.errorChan:
+				service.eventListener.Disconnect()
+				break RefreshLoop
+			}
+		}
+		// TODO: exponential backoff
 	}
-	service.eventListener.Disconnect()
 	loggo.GetLogger("").Infof("service has been stopped...")
 	return err
 }
 
 // Shutdown stops the service.
 func (service *Service) Shutdown() error {
-	loggo.GetLogger("").Infof("received shutdown signal, stopping service...")
-	close(service.stopChan)
+	loggo.GetLogger("").Infof("shutdown signal received")
+	service.stopChan <- struct{}{}
 	return nil
 }

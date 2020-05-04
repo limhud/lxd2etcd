@@ -134,16 +134,7 @@ func main() {
 	err = service.Start()
 	if err != nil {
 		loggo.GetLogger("").Errorf(stacktrace.Propagate(err, "service error").Error())
-		err = service.Shutdown()
-		if err != nil {
-			loggo.GetLogger("").Errorf(err.Error())
-		}
 		os.Exit(1)
-	}
-
-	err = service.Shutdown()
-	if err != nil {
-		loggo.GetLogger("").Errorf(err.Error())
 	}
 
 	os.Exit(0)
