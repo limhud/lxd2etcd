@@ -1,0 +1,4 @@
+---
+debug: false
+lxd_socket: /var/snap/lxd/common/lxd/unix.socket
+...
