@@ -14,9 +14,9 @@ import (
 )
 
 var (
-	lock           sync.Mutex
-	configFilePath string
-	permanentDebug bool
+	lock              sync.Mutex
+	configFilePath    string
+	immutableLogLevel bool
 	// Configuration is the global Config instance storing the current configuration
 	Configuration Config
 )
@@ -129,10 +129,12 @@ func ReadInConfig() error {
 	}
 	loggo.GetLogger("").Debugf("config file <%s> parsed successfully", configFilePath)
 
-	if Configuration.Debug && loggo.GetLogger("").LogLevel() == loggo.INFO {
-		loggo.GetLogger("").SetLogLevel(loggo.DEBUG)
-	} else if !permanentDebug {
-		loggo.GetLogger("").SetLogLevel(loggo.INFO)
+	if !immutableLogLevel {
+		if Configuration.Debug {
+			loggo.GetLogger("").SetLogLevel(loggo.DEBUG)
+		} else {
+			loggo.GetLogger("").SetLogLevel(loggo.INFO)
+		}
 	}
 
 	loggo.GetLogger("").Debugf("config struct: <%#v>", Configuration)
@@ -182,10 +184,10 @@ func GetDebug() bool {
 	return Configuration.Debug
 }
 
-// SetPermanentDebug sets a flag to deactivate debug removal from the config file
-func SetPermanentDebug() {
+// SetLogLevelImmutable sets a flag to deactivate log level modification by configuration
+func SetLogLevelImmutable() {
 	lock.Lock()
 	defer lock.Unlock()
 
-	permanentDebug = true
+	immutableLogLevel = true
 }

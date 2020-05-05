@@ -1,6 +1,9 @@
 package lxd2etcd
 
 import (
+	"context"
+	"time"
+
 	"github.com/limhud/lxd2etcd/internal/config"
 
 	"github.com/juju/loggo"
@@ -11,7 +14,7 @@ import (
 
 // Service represents a service struct.
 type Service struct {
-	stopChan       chan struct{}
+	initialized    bool
 	instanceServer lxd.InstanceServer
 	eventListener  *lxd.EventListener
 	errorChan      chan error
@@ -24,7 +27,7 @@ func NewService() (*Service, error) {
 		service *Service
 	)
 	service = &Service{}
-	service.stopChan = make(chan struct{})
+	service.initialized = false
 	service.errorChan = make(chan error)
 	service.refreshChan = make(chan struct{})
 	return service, nil
@@ -36,6 +39,7 @@ func (service *Service) init() error {
 		eventName    string
 		eventHandler *LxdEventHandler
 	)
+	loggo.GetLogger("").Tracef("initializing service")
 	// initialize lxd listener
 	service.instanceServer, err = lxd.ConnectLXDUnix(config.GetLxd().Socket, nil)
 	if err != nil {
@@ -65,6 +69,68 @@ func (service *Service) init() error {
 	return nil
 }
 
+func initServiceWithRetries(ctx context.Context, service *Service) {
+	var (
+		err               error
+		wait              time.Duration
+		errChan           chan error
+		inChan            chan *Service
+		outChan           chan *Service
+		intializedService *Service
+		timer             *time.Timer
+	)
+	service.initialized = false
+	wait = 0
+	errChan = make(chan error)
+	inChan = make(chan *Service)
+	outChan = make(chan *Service)
+	loggo.GetLogger("").Tracef("starting to initialize service with retries")
+	for {
+		go func() {
+			var (
+				err                 error
+				serviceToInitialize *Service
+			)
+			select {
+			case <-ctx.Done():
+				return
+			case serviceToInitialize = <-inChan:
+				err = serviceToInitialize.init()
+				if err != nil {
+					loggo.GetLogger("").Tracef("intialization error")
+					errChan <- stacktrace.Propagate(err, "fail to initialize lxd client")
+					return
+				}
+				outChan <- serviceToInitialize
+			}
+		}()
+		inChan <- service
+		select {
+		case <-ctx.Done():
+			loggo.GetLogger("").Tracef("initialization canceled")
+			return
+		case intializedService = <-outChan:
+			service.instanceServer = intializedService.instanceServer
+			service.eventListener = intializedService.eventListener
+			service.initialized = true
+			return
+		case err = <-errChan:
+			loggo.GetLogger("").Errorf(err.Error())
+		}
+		timer = time.NewTimer(wait * time.Second)
+		select {
+		case <-ctx.Done():
+			loggo.GetLogger("").Tracef("initialization canceled")
+			return
+		case <-timer.C:
+			loggo.GetLogger("").Tracef("trying again to initialize service")
+			if wait < 60 {
+				wait = wait + 10
+			}
+		}
+	}
+}
+
 // ToggleDebug toggles log levele between DEBUG and INFO.
 func (service *Service) ToggleDebug() {
 	if loggo.GetLogger("").LogLevel() == loggo.INFO {
@@ -80,26 +146,27 @@ func (service *Service) ToggleDebug() {
 }
 
 // Start the service.
-func (service *Service) Start() error {
+func (service *Service) Start(ctx context.Context) error {
 	var (
 		err     error
 		lxdInfo *LxdInfo
 	)
-	go func() {
-		service.refreshChan <- struct{}{}
-	}()
 ServiceLoop:
 	for {
-		err = service.init()
-		if err != nil {
-			break ServiceLoop
+		initServiceWithRetries(ctx, service)
+		if service.initialized {
+			go func() {
+				service.refreshChan <- struct{}{}
+			}()
 		}
 	RefreshLoop:
 		for {
 			select {
-			case <-service.stopChan:
+			case <-ctx.Done():
 				loggo.GetLogger("").Infof("stopping service...")
-				service.eventListener.Disconnect()
+				if service.initialized {
+					service.eventListener.Disconnect()
+				}
 				break ServiceLoop
 			case <-service.refreshChan:
 				loggo.GetLogger("").Infof("refresh triggered")
@@ -109,21 +176,14 @@ ServiceLoop:
 				if err != nil {
 					loggo.GetLogger("").Errorf(stacktrace.Propagate(err, "fail to obtain lxd infos").Error())
 				}
-				loggo.GetLogger("").Debugf("retrieved lxd info: <%#v>", lxdInfo)
+				loggo.GetLogger("").Debugf("retrieved lxd info:\n%s", lxdInfo.PrettyString())
 			case err = <-service.errorChan:
 				service.eventListener.Disconnect()
+				loggo.GetLogger("").Errorf(err.Error())
 				break RefreshLoop
 			}
 		}
-		// TODO: exponential backoff
 	}
 	loggo.GetLogger("").Infof("service has been stopped...")
 	return err
-}
-
-// Shutdown stops the service.
-func (service *Service) Shutdown() error {
-	loggo.GetLogger("").Infof("shutdown signal received")
-	service.stopChan <- struct{}{}
-	return nil
 }

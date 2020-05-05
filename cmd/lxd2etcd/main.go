@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
@@ -47,6 +48,8 @@ func main() {
 		flagSet      *flag.FlagSet
 		configString string
 		service      *lxd2etcd.Service
+		ctx          context.Context
+		cancel       context.CancelFunc
 		sigChan      chan os.Signal
 	)
 
@@ -76,10 +79,12 @@ func main() {
 
 	if cmd.Debug {
 		loggo.GetLogger("").SetLogLevel(loggo.DEBUG)
+		config.SetLogLevelImmutable()
 	}
 
 	if cmd.Trace {
 		loggo.GetLogger("").SetLogLevel(loggo.TRACE)
+		config.SetLogLevelImmutable()
 	}
 
 	if cmd.Version {
@@ -110,6 +115,9 @@ func main() {
 		os.Exit(1)
 	}
 
+	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
+
 	// Handle service signals
 	sigChan = make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGUSR2, syscall.SIGHUP, syscall.SIGUSR1)
@@ -118,11 +126,7 @@ func main() {
 		for sig := range sigChan {
 			switch sig {
 			case syscall.SIGINT, syscall.SIGTERM:
-				err = service.Shutdown()
-				if err != nil {
-					loggo.GetLogger("").Errorf(stacktrace.Propagate(err, "fail to shutdown server").Error())
-				}
-
+				cancel()
 			case syscall.SIGUSR2:
 				service.ToggleDebug()
 			}
@@ -131,7 +135,7 @@ func main() {
 
 	// Start service and wait
 	loggo.GetLogger("").Debugf("starting service...")
-	err = service.Start()
+	err = service.Start(ctx)
 	if err != nil {
 		loggo.GetLogger("").Errorf(stacktrace.Propagate(err, "service error").Error())
 		os.Exit(1)
