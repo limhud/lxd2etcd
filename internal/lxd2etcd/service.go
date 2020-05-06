@@ -33,6 +33,67 @@ func NewService() (*Service, error) {
 	return service, nil
 }
 
+func initServiceWithRetries(ctx context.Context, service *Service) {
+	var (
+		err      error
+		wait     time.Duration
+		errChan  chan error
+		inChan   chan *Service
+		doneChan chan struct{}
+		timer    *time.Timer
+	)
+	service.initialized = false
+	wait = 0
+	errChan = make(chan error)
+	inChan = make(chan *Service)
+	doneChan = make(chan struct{})
+	loggo.GetLogger("").Tracef("starting to initialize service with retries")
+	for {
+		go func() {
+			var (
+				err                 error
+				serviceToInitialize *Service
+			)
+			select {
+			case <-ctx.Done():
+				return
+			case serviceToInitialize = <-inChan:
+				err = serviceToInitialize.init()
+				if err != nil {
+					loggo.GetLogger("").Tracef("intialization error")
+					errChan <- stacktrace.Propagate(err, "fail to initialize lxd client")
+					return
+				}
+				doneChan <- struct{}{}
+			}
+		}()
+		inChan <- service
+		select {
+		case <-ctx.Done():
+			loggo.GetLogger("").Tracef("initialization canceled")
+			return
+		case <-doneChan:
+			service.initialized = true
+			loggo.GetLogger("").Debugf("service initialized")
+			loggo.GetLogger("").Tracef("service: <%#v>", service)
+			return
+		case err = <-errChan:
+			loggo.GetLogger("").Errorf(err.Error())
+		}
+		timer = time.NewTimer(wait * time.Second)
+		select {
+		case <-ctx.Done():
+			loggo.GetLogger("").Tracef("initialization canceled")
+			return
+		case <-timer.C:
+			loggo.GetLogger("").Tracef("trying again to initialize service")
+			if wait < 60 {
+				wait = wait + 10
+			}
+		}
+	}
+}
+
 func (service *Service) init() error {
 	var (
 		err          error
@@ -67,68 +128,6 @@ func (service *Service) init() error {
 		}
 	}
 	return nil
-}
-
-func initServiceWithRetries(ctx context.Context, service *Service) {
-	var (
-		err               error
-		wait              time.Duration
-		errChan           chan error
-		inChan            chan *Service
-		outChan           chan *Service
-		intializedService *Service
-		timer             *time.Timer
-	)
-	service.initialized = false
-	wait = 0
-	errChan = make(chan error)
-	inChan = make(chan *Service)
-	outChan = make(chan *Service)
-	loggo.GetLogger("").Tracef("starting to initialize service with retries")
-	for {
-		go func() {
-			var (
-				err                 error
-				serviceToInitialize *Service
-			)
-			select {
-			case <-ctx.Done():
-				return
-			case serviceToInitialize = <-inChan:
-				err = serviceToInitialize.init()
-				if err != nil {
-					loggo.GetLogger("").Tracef("intialization error")
-					errChan <- stacktrace.Propagate(err, "fail to initialize lxd client")
-					return
-				}
-				outChan <- serviceToInitialize
-			}
-		}()
-		inChan <- service
-		select {
-		case <-ctx.Done():
-			loggo.GetLogger("").Tracef("initialization canceled")
-			return
-		case intializedService = <-outChan:
-			service.instanceServer = intializedService.instanceServer
-			service.eventListener = intializedService.eventListener
-			service.initialized = true
-			return
-		case err = <-errChan:
-			loggo.GetLogger("").Errorf(err.Error())
-		}
-		timer = time.NewTimer(wait * time.Second)
-		select {
-		case <-ctx.Done():
-			loggo.GetLogger("").Tracef("initialization canceled")
-			return
-		case <-timer.C:
-			loggo.GetLogger("").Tracef("trying again to initialize service")
-			if wait < 60 {
-				wait = wait + 10
-			}
-		}
-	}
 }
 
 // ToggleDebug toggles log levele between DEBUG and INFO.
