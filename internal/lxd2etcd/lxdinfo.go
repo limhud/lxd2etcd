@@ -2,6 +2,7 @@ package lxd2etcd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 
@@ -9,27 +10,28 @@ import (
 	"github.com/lxc/lxd/client"
 	"github.com/lxc/lxd/shared/api"
 	"github.com/palantir/stacktrace"
+	"go.etcd.io/etcd/clientv3"
 )
 
 type NetworkInfo struct {
-	MAC string
+	MAC string `json:"mac"`
 }
 
 type NetDev struct {
-	Network string
-	Port    string
-	MAC     string
-	IPv4    []string
-	IPv6    []string
+	Network string   `json:"network"`
+	Port    string   `json:"port"`
+	MAC     string   `json:"mac"`
+	IPv4    []string `json:"ipv4"`
+	IPv6    []string `json:"ipv6"`
 }
 
 type ContainerInfo struct {
-	NetDevs map[string]*NetDev
+	NetDevs map[string]*NetDev `json:"netdevs"`
 }
 
 type LxdInfo struct {
-	Networks   map[string]*NetworkInfo
-	Containers map[string]*ContainerInfo
+	Networks   map[string]*NetworkInfo   `json:"networks"`
+	Containers map[string]*ContainerInfo `json:"containers"`
 }
 
 func (lxdInfo *LxdInfo) Populate(instanceServer lxd.InstanceServer) error {
@@ -94,6 +96,38 @@ func (lxdInfo *LxdInfo) Populate(instanceServer lxd.InstanceServer) error {
 			containerInfo.NetDevs[netname] = netdev
 		}
 		lxdInfo.Containers[container.Name] = containerInfo
+	}
+	return nil
+}
+
+func (lxdInfo *LxdInfo) Persist(ctx context.Context, etcdClient *clientv3.Client) error {
+	var (
+		err     error
+		key     string
+		binJson []byte
+		value   string
+	)
+	// Persist network infos
+	key = fmt.Sprintf("/lxd/%s/networks", config.GetHostname())
+	binJson, err = json.Marshal(lxdInfo.Networks)
+	if err != nil {
+		return stacktrace.Propagate(err, "fail to serialize <%#v>", lxdInfo.Networks)
+	}
+	value = string(binJson)
+	_, err = etcdClient.Put(ctx, key, value)
+	if err != nil {
+		return stacktrace.Propagate(err, "fail to put key <%s> in etcd", key)
+	}
+	// Persist container infos
+	key = fmt.Sprintf("/lxd/%s/containers", config.GetHostname())
+	binJson, err = json.Marshal(lxdInfo.Containers)
+	if err != nil {
+		return stacktrace.Propagate(err, "fail to serialize <%#v>", lxdInfo.Containers)
+	}
+	value = string(binJson)
+	_, err = etcdClient.Put(ctx, key, value)
+	if err != nil {
+		return stacktrace.Propagate(err, "fail to put key <%s> in etcd", key)
 	}
 	return nil
 }

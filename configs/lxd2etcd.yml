@@ -1,5 +1,11 @@
 ---
 debug: false
+hostname: test
 lxd:
   socket: /var/snap/lxd/common/lxd/unix.socket
+etcd:
+  endpoints: ["127.0.0.1:2379"]
+  dial_timeout: 5
+  username: toto
+  password: titi
 ...

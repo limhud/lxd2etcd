@@ -10,15 +10,17 @@ import (
 	"github.com/lxc/lxd/client"
 	"github.com/lxc/lxd/shared/api"
 	"github.com/palantir/stacktrace"
+	"go.etcd.io/etcd/clientv3"
 )
 
 // Service represents a service struct.
 type Service struct {
-	initialized    bool
-	instanceServer lxd.InstanceServer
-	eventListener  *lxd.EventListener
-	errorChan      chan error
-	refreshChan    chan struct{}
+	initialized       bool
+	lxdInstanceServer lxd.InstanceServer
+	lxdEventListener  *lxd.EventListener
+	etcdClient        *clientv3.Client
+	errorChan         chan error
+	refreshChan       chan struct{}
 }
 
 // NewService returns a new service instance.
@@ -58,7 +60,7 @@ func initServiceWithRetries(ctx context.Context, service *Service) {
 			case <-ctx.Done():
 				return
 			case serviceToInitialize = <-inChan:
-				err = serviceToInitialize.init()
+				err = serviceToInitialize.init(ctx)
 				if err != nil {
 					loggo.GetLogger("").Tracef("intialization error")
 					errChan <- stacktrace.Propagate(err, "fail to initialize lxd client")
@@ -94,26 +96,27 @@ func initServiceWithRetries(ctx context.Context, service *Service) {
 	}
 }
 
-func (service *Service) init() error {
+func (service *Service) init(ctx context.Context) error {
 	var (
 		err          error
 		eventName    string
 		eventHandler *LxdEventHandler
+		etcdConfig   clientv3.Config
 	)
 	loggo.GetLogger("").Tracef("initializing service")
 	// initialize lxd listener
-	service.instanceServer, err = lxd.ConnectLXDUnix(config.GetLxd().Socket, nil)
+	service.lxdInstanceServer, err = lxd.ConnectLXDUnix(config.GetLxd().Socket, nil)
 	if err != nil {
 		return stacktrace.Propagate(err, "fail to initialize lxd client")
 	}
 	loggo.GetLogger("").Debugf("lxd client initialized")
-	service.eventListener, err = service.instanceServer.GetEvents()
+	service.lxdEventListener, err = service.lxdInstanceServer.GetEvents()
 	if err != nil {
 		return stacktrace.Propagate(err, "fail to initialize lxd event listener")
 	}
-	// initialize listener handlers
+	// initialize lxd listener handlers
 	for eventName, eventHandler = range LxdEventHandlers {
-		_, err = service.eventListener.AddHandler(eventHandler.Types, func(event api.Event) {
+		_, err = service.lxdEventListener.AddHandler(eventHandler.Types, func(event api.Event) {
 			var (
 				err error
 			)
@@ -127,7 +130,36 @@ func (service *Service) init() error {
 			return stacktrace.Propagate(err, "fail to add event handler for event <%s>", eventName)
 		}
 	}
+	// TODO: initialize etcd client
+	etcdConfig = clientv3.Config{
+		Endpoints:   config.GetEtcd().Endpoints,
+		DialTimeout: config.GetEtcd().DialTimeout,
+		Username:    config.GetEtcd().Username,
+		Password:    config.GetEtcd().Password,
+		Context:     ctx,
+	}
+	service.etcdClient, err = clientv3.New(etcdConfig)
+	if err != nil {
+		return stacktrace.Propagate(err, "fail to initialize etcd client with config <%#v>", etcdConfig)
+	}
 	return nil
+}
+
+func (service *Service) disconnect() {
+	var (
+		err error
+	)
+	// disconnect from lxd
+	if service.lxdEventListener != nil && service.lxdEventListener.IsActive() {
+		service.lxdEventListener.Disconnect()
+	}
+	// disconnect from etcd
+	if service.etcdClient != nil && service.etcdClient.ActiveConnection != nil {
+		err = service.etcdClient.Close()
+		if err != nil {
+			loggo.GetLogger("").Errorf(stacktrace.Propagate(err, "fail to close etcd client").Error())
+		}
+	}
 }
 
 // ToggleDebug toggles log levele between DEBUG and INFO.
@@ -163,26 +195,31 @@ ServiceLoop:
 			select {
 			case <-ctx.Done():
 				loggo.GetLogger("").Infof("stopping service...")
-				if service.initialized {
-					service.eventListener.Disconnect()
-				}
 				break ServiceLoop
 			case <-service.refreshChan:
 				loggo.GetLogger("").Infof("refresh triggered")
-				// TODO: trigger refresh for info in etcd
 				lxdInfo = &LxdInfo{}
-				err = lxdInfo.Populate(service.instanceServer)
+				err = lxdInfo.Populate(service.lxdInstanceServer)
 				if err != nil {
 					loggo.GetLogger("").Errorf(stacktrace.Propagate(err, "fail to obtain lxd infos").Error())
+					service.disconnect()
+					break RefreshLoop
 				}
 				loggo.GetLogger("").Debugf("retrieved lxd info:\n%s", lxdInfo.PrettyString())
+				err = lxdInfo.Persist(ctx, service.etcdClient)
+				if err != nil {
+					loggo.GetLogger("").Errorf(stacktrace.Propagate(err, "fail to persist data to etcd").Error())
+					service.disconnect()
+					break RefreshLoop
+				}
 			case err = <-service.errorChan:
-				service.eventListener.Disconnect()
+				service.disconnect()
 				loggo.GetLogger("").Errorf(err.Error())
 				break RefreshLoop
 			}
 		}
 	}
+	service.disconnect()
 	loggo.GetLogger("").Infof("service has been stopped...")
 	return err
 }
