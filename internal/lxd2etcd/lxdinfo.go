@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/limhud/lxd2etcd/internal/config"
+
 	"github.com/juju/loggo"
 	"github.com/lxc/lxd/client"
 	"github.com/lxc/lxd/shared/api"

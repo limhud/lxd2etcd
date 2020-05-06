@@ -52,12 +52,7 @@ prepare_build: clean
 	@(install -d -m 0755 $(BUILD_DIR)/bin) && \
 	$(call mesg_ok) || $(call mesg_fail)
 
-dependency: prepare_build
-	@$(call mesg_start,dependency,Fetching dependencies...)
-	@dep ensure -v && \
-	$(call mesg_ok) || $(call mesg_fail)
-
-build_linux: dependency prepare_build
+build_linux: prepare_build
 	@(for bin in $(BIN_LIST); do \
 		$(call mesg_start,build,Building $$bin binary...); \
 		$(GO) build -i -v \
