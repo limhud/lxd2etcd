@@ -28,6 +28,7 @@ type NetDev struct {
 }
 
 type ContainerInfo struct {
+	Status  string             `json:"status"`
 	NetDevs map[string]*NetDev `json:"netdevs"`
 }
 
@@ -78,6 +79,7 @@ func (lxdInfo *LxdInfo) Populate(instanceServer lxd.InstanceServer) error {
 	for _, container = range containers {
 		loggo.GetLogger("").Tracef("processing container: <%#v>", container)
 		containerInfo = &ContainerInfo{}
+		containerInfo.Status = container.Status
 		containerInfo.NetDevs = make(map[string]*NetDev)
 		for netname, net = range container.State.Network {
 			loggo.GetLogger("").Tracef("processing container network <%s>: <%#v>", netname, net)

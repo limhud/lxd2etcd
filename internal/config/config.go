@@ -27,7 +27,8 @@ var (
 
 // LxdConfig represents the unix socket configuration
 type LxdConfig struct {
-	Socket string `yaml:"socket"`
+	Socket string        `yaml:"socket"`
+	Poll   time.Duration `yaml:"poll"`
 }
 
 // Equal tests if content is the same
@@ -38,6 +39,9 @@ func (lxd *LxdConfig) Equal(comparedWith *LxdConfig) error {
 	if lxd.Socket != comparedWith.Socket {
 		return stacktrace.NewError("Socket value <%s> is different: <%s>", lxd.Socket, comparedWith.Socket)
 	}
+	if lxd.Poll != comparedWith.Poll {
+		return stacktrace.NewError("Poll value <%s> is different: <%s>", lxd.Poll, comparedWith.Poll)
+	}
 	return nil
 }
 
@@ -45,6 +49,7 @@ func (lxd *LxdConfig) Equal(comparedWith *LxdConfig) error {
 func (lxd *LxdConfig) Copy() *LxdConfig {
 	return &LxdConfig{
 		Socket: lxd.Socket,
+		Poll:   lxd.Poll,
 	}
 }
 
@@ -67,7 +72,7 @@ func (etcd *EtcdConfig) Equal(comparedWith *EtcdConfig) error {
 		return stacktrace.NewError("Endpoints value <%s> is different: <%s>", etcd.Endpoints, comparedWith.Endpoints)
 	}
 	if etcd.DialTimeout != comparedWith.DialTimeout {
-		return stacktrace.NewError("DialTimeout value <%d> is different: <%d>", etcd.DialTimeout, comparedWith.DialTimeout)
+		return stacktrace.NewError("DialTimeout value <%s> is different: <%s>", etcd.DialTimeout, comparedWith.DialTimeout)
 	}
 	if etcd.Username != comparedWith.Username {
 		return stacktrace.NewError("Username value <%s> is different: <%s>", etcd.Username, comparedWith.Username)
@@ -80,7 +85,12 @@ func (etcd *EtcdConfig) Equal(comparedWith *EtcdConfig) error {
 
 // Copy returns a copy of the object
 func (etcd *EtcdConfig) Copy() *EtcdConfig {
-	return &EtcdConfig{}
+	return &EtcdConfig{
+		Endpoints:   etcd.Endpoints,
+		DialTimeout: etcd.DialTimeout,
+		Username:    etcd.Username,
+		Password:    etcd.Password,
+	}
 }
 
 // --- Global Config section

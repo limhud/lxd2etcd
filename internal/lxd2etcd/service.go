@@ -63,7 +63,7 @@ func initServiceWithRetries(ctx context.Context, service *Service) {
 				err = serviceToInitialize.init(ctx)
 				if err != nil {
 					loggo.GetLogger("").Tracef("intialization error")
-					errChan <- stacktrace.Propagate(err, "fail to initialize lxd client")
+					errChan <- stacktrace.Propagate(err, "fail to initialize service")
 					return
 				}
 				doneChan <- struct{}{}
@@ -98,10 +98,9 @@ func initServiceWithRetries(ctx context.Context, service *Service) {
 
 func (service *Service) init(ctx context.Context) error {
 	var (
-		err          error
-		eventName    string
-		eventHandler *LxdEventHandler
-		etcdConfig   clientv3.Config
+		err        error
+		eventName  string
+		etcdConfig clientv3.Config
 	)
 	loggo.GetLogger("").Tracef("initializing service")
 	// initialize lxd listener
@@ -114,23 +113,22 @@ func (service *Service) init(ctx context.Context) error {
 	if err != nil {
 		return stacktrace.Propagate(err, "fail to initialize lxd event listener")
 	}
-	// initialize lxd listener handlers
-	for eventName, eventHandler = range LxdEventHandlers {
-		_, err = service.lxdEventListener.AddHandler(eventHandler.Types, func(event api.Event) {
-			var (
-				err error
-			)
-			loggo.GetLogger("").Tracef("event <%s>/<%s>: <%s>", eventName, eventHandler.Types, LxdEventToString(event))
-			err = eventHandler.Handler(service.refreshChan, event)
-			if err != nil {
-				service.errorChan <- err
-			}
-		})
+	// initialize lxd listener handler
+	_, err = service.lxdEventListener.AddHandler([]string{"operation"}, func(event api.Event) {
+		var (
+			err error
+		)
+		loggo.GetLogger("").Tracef("event <%s>: <%s>", eventName, LxdEventToString(event))
+		err = LxdEventHandler(service.refreshChan, event)
 		if err != nil {
-			return stacktrace.Propagate(err, "fail to add event handler for event <%s>", eventName)
+			service.errorChan <- err
 		}
+	})
+	if err != nil {
+		return stacktrace.Propagate(err, "fail to add event handler for <operation> event type")
 	}
-	// TODO: initialize etcd client
+	loggo.GetLogger("").Debugf("lxd event handlers installed")
+	// initialize etcd client
 	etcdConfig = clientv3.Config{
 		Endpoints:   config.GetEtcd().Endpoints,
 		DialTimeout: config.GetEtcd().DialTimeout,
@@ -138,10 +136,12 @@ func (service *Service) init(ctx context.Context) error {
 		Password:    config.GetEtcd().Password,
 		Context:     ctx,
 	}
+	loggo.GetLogger("").Debugf("etcd config: <%#v>", etcdConfig)
 	service.etcdClient, err = clientv3.New(etcdConfig)
 	if err != nil {
 		return stacktrace.Propagate(err, "fail to initialize etcd client with config <%#v>", etcdConfig)
 	}
+	loggo.GetLogger("").Debugf("etcd client initialized")
 	return nil
 }
 
@@ -154,7 +154,7 @@ func (service *Service) disconnect() {
 		service.lxdEventListener.Disconnect()
 	}
 	// disconnect from etcd
-	if service.etcdClient != nil && service.etcdClient.ActiveConnection != nil {
+	if service.etcdClient != nil && service.etcdClient.ActiveConnection() != nil {
 		err = service.etcdClient.Close()
 		if err != nil {
 			loggo.GetLogger("").Errorf(stacktrace.Propagate(err, "fail to close etcd client").Error())
@@ -212,6 +212,7 @@ ServiceLoop:
 					service.disconnect()
 					break RefreshLoop
 				}
+				loggo.GetLogger("").Infof("etcd updated")
 			case err = <-service.errorChan:
 				service.disconnect()
 				loggo.GetLogger("").Errorf(err.Error())

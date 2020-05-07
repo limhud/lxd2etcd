@@ -2,8 +2,6 @@ module github.com/limhud/lxd2etcd
 
 go 1.14
 
-replace google.golang.org/grpc => google.golang.org/grpc v1.26.0
-
 require (
 	github.com/coreos/etcd v3.3.20+incompatible // indirect
 	github.com/coreos/go-semver v0.3.0 // indirect

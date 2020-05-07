@@ -52,10 +52,31 @@ prepare_build: clean
 	@(install -d -m 0755 $(BUILD_DIR)/bin) && \
 	$(call mesg_ok) || $(call mesg_fail)
 
-build_linux: prepare_build
+build_debug: prepare_build
+	@$(call mesg_start,build,Preparing vendor directory...)
+	@go mod vendor && \
+	$(call mesg_ok) || $(call mesg_fail)
 	@(for bin in $(BIN_LIST); do \
 		$(call mesg_start,build,Building $$bin binary...); \
-		$(GO) build -i -v \
+		$(GO) build -v \
+		-gcflags "all=-N -l" \
+		-ldflags=all="\
+		-X main.version=$(VERSION) \
+		-X main.buildDate=$(BUILD_DATE) \
+		-X main.buildHash=$(BUILD_HASH) \
+		" \
+		-o $(BIN_PATH)/$$bin ./cmd/$$bin && \
+		$(call mesg_ok) || $(call mesg_fail); \
+		done)
+
+
+build_linux: prepare_build
+	@$(call mesg_start,build,Preparing vendor directory...)
+	@go mod vendor && \
+	$(call mesg_ok) || $(call mesg_fail)
+	@(for bin in $(BIN_LIST); do \
+		$(call mesg_start,build,Building $$bin binary...); \
+		$(GO) build -v \
 		-ldflags=all="-s -w \
 		-X main.version=$(VERSION) \
 		-X main.buildDate=$(BUILD_DATE) \

@@ -3,9 +3,10 @@ debug: false
 hostname: test
 lxd:
   socket: /var/snap/lxd/common/lxd/unix.socket
+  poll: 1s
 etcd:
   endpoints: ["127.0.0.1:2379"]
-  dial_timeout: 5
+  dial_timeout: 5s
   username: toto
   password: titi
 ...
