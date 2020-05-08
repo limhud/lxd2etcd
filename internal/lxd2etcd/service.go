@@ -179,17 +179,18 @@ func (service *Service) ToggleDebug() {
 // Start the service.
 func (service *Service) Start(ctx context.Context) error {
 	var (
-		err     error
-		lxdInfo *LxdInfo
+		err                   error
+		lxdInfo               *LxdInfo
+		processingTriggerChan chan struct{}
+		timer                 *time.Timer
 	)
+	processingTriggerChan = make(chan struct{})
 ServiceLoop:
 	for {
 		initServiceWithRetries(ctx, service)
-		if service.initialized {
-			go func() {
-				service.refreshChan <- struct{}{}
-			}()
-		}
+		timer = time.AfterFunc(config.GetLxd().WaitForDHCP, func() {
+			processingTriggerChan <- struct{}{}
+		})
 	RefreshLoop:
 		for {
 			select {
@@ -198,6 +199,15 @@ ServiceLoop:
 				break ServiceLoop
 			case <-service.refreshChan:
 				loggo.GetLogger("").Infof("refresh triggered")
+				timer.Stop()
+				timer = time.AfterFunc(config.GetLxd().WaitForDHCP, func() {
+					processingTriggerChan <- struct{}{}
+				})
+			case <-processingTriggerChan:
+				if !service.initialized {
+					loggo.GetLogger("").Warningf("cancelling triggered processing before service initialization")
+					continue
+				}
 				lxdInfo = &LxdInfo{}
 				err = lxdInfo.Populate(service.lxdInstanceServer)
 				if err != nil {

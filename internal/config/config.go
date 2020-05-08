@@ -15,6 +15,8 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
+// TODO: add validation
+
 var (
 	lock              sync.Mutex
 	configFilePath    string
@@ -23,12 +25,73 @@ var (
 	Configuration Config
 )
 
-// --- ServerConfig section
+// --- Containers section
+type ContainerData struct {
+	NodeIP           string `yaml:"node_ip"`
+	DefaultInterface string `yaml:"default_interface"`
+}
+
+type ContainersConfig map[string]ContainerData
+
+func (containers *ContainersConfig) Get(containerName string) *ContainerData {
+	var (
+		data ContainerData
+		ok   bool
+	)
+	data, ok = (*containers)[containerName]
+	if !ok {
+		return &ContainerData{}
+	}
+	return &data
+}
+
+func (containers *ContainersConfig) Equal(comparedWith *ContainersConfig) error {
+	var (
+		key           string
+		value         ContainerData
+		comparedValue ContainerData
+		ok            bool
+	)
+	if comparedWith == nil {
+		return stacktrace.NewError("cannot compare with <nil>")
+	}
+	for key, value = range *containers {
+		comparedValue, ok = (*comparedWith)[key]
+		if !ok {
+			return stacktrace.NewError("missing key <%s>", key)
+		}
+		if value != comparedValue {
+			return stacktrace.NewError("mismatch value for key <%s>: <%#v> != <%#v>", key, value, comparedValue)
+		}
+	}
+	for key = range *comparedWith {
+		_, ok = (*containers)[key]
+		if !ok {
+			return stacktrace.NewError("extraneous key <%s>", key)
+		}
+	}
+	return nil
+}
+
+func (containers *ContainersConfig) Copy() *ContainersConfig {
+	var (
+		copyCfg ContainersConfig
+		key     string
+		value   ContainerData
+	)
+	copyCfg = make(map[string]ContainerData)
+	for key, value = range *containers {
+		copyCfg[key] = value
+	}
+	return &copyCfg
+}
+
+// --- LxdConfig section
 
 // LxdConfig represents the unix socket configuration
 type LxdConfig struct {
-	Socket string        `yaml:"socket"`
-	Poll   time.Duration `yaml:"poll"`
+	Socket      string        `yaml:"socket"`
+	WaitForDHCP time.Duration `yaml:"wait_for_dhcp"`
 }
 
 // Equal tests if content is the same
@@ -39,8 +102,8 @@ func (lxd *LxdConfig) Equal(comparedWith *LxdConfig) error {
 	if lxd.Socket != comparedWith.Socket {
 		return stacktrace.NewError("Socket value <%s> is different: <%s>", lxd.Socket, comparedWith.Socket)
 	}
-	if lxd.Poll != comparedWith.Poll {
-		return stacktrace.NewError("Poll value <%s> is different: <%s>", lxd.Poll, comparedWith.Poll)
+	if lxd.WaitForDHCP != comparedWith.WaitForDHCP {
+		return stacktrace.NewError("WaitForDHCP value <%s> is different: <%s>", lxd.WaitForDHCP, comparedWith.WaitForDHCP)
 	}
 	return nil
 }
@@ -48,8 +111,8 @@ func (lxd *LxdConfig) Equal(comparedWith *LxdConfig) error {
 // Copy returns a copy of the object
 func (lxd *LxdConfig) Copy() *LxdConfig {
 	return &LxdConfig{
-		Socket: lxd.Socket,
-		Poll:   lxd.Poll,
+		Socket:      lxd.Socket,
+		WaitForDHCP: lxd.WaitForDHCP,
 	}
 }
 
@@ -97,10 +160,11 @@ func (etcd *EtcdConfig) Copy() *EtcdConfig {
 
 // Config file structure definition
 type Config struct {
-	Debug    bool       `yaml:"debug"`
-	Hostname string     `yaml:"hostname"`
-	Lxd      LxdConfig  `yaml:"lxd"`
-	Etcd     EtcdConfig `yaml:"etcd"`
+	Debug      bool             `yaml:"debug"`
+	Hostname   string           `yaml:"hostname"`
+	Lxd        LxdConfig        `yaml:"lxd"`
+	Etcd       EtcdConfig       `yaml:"etcd"`
+	Containers ContainersConfig `yaml:"containers"`
 }
 
 // String returns a string representing a config struct.
@@ -117,10 +181,10 @@ func (c *Config) Equal(comparedWith *Config) error {
 		return stacktrace.NewError("cannot compare with <%s>", comparedWith)
 	}
 	if c.Debug != comparedWith.Debug {
-		return stacktrace.NewError("Debug value <%t> is different: <%t>", c.Debug, comparedWith.Debug)
+		return stacktrace.NewError("debug value <%t> is different: <%t>", c.Debug, comparedWith.Debug)
 	}
 	if c.Hostname != comparedWith.Hostname {
-		return stacktrace.NewError("Hostname value <%s> is different: <%s>", c.Hostname, comparedWith.Hostname)
+		return stacktrace.NewError("hostname value <%s> is different: <%s>", c.Hostname, comparedWith.Hostname)
 	}
 	err = c.Lxd.Equal(&comparedWith.Lxd)
 	if err != nil {
@@ -129,6 +193,10 @@ func (c *Config) Equal(comparedWith *Config) error {
 	err = c.Etcd.Equal(&comparedWith.Etcd)
 	if err != nil {
 		return stacktrace.Propagate(err, "etcd section is different")
+	}
+	err = c.Containers.Equal(&comparedWith.Containers)
+	if err != nil {
+		return stacktrace.Propagate(err, "containers section is different")
 	}
 	return nil
 }
@@ -206,6 +274,14 @@ func GetEtcd() *EtcdConfig {
 	defer lock.Unlock()
 
 	return Configuration.Etcd.Copy()
+}
+
+// GetContainers returns the containers config section
+func GetContainers() *ContainersConfig {
+	lock.Lock()
+	defer lock.Unlock()
+
+	return Configuration.Containers.Copy()
 }
 
 // GetHostname returns hostname config field.

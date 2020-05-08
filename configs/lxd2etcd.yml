@@ -1,12 +1,19 @@
 ---
 debug: false
-hostname: test
+hostname: test.example.net
 lxd:
   socket: /var/snap/lxd/common/lxd/unix.socket
-  poll: 1s
+  wait_for_dhcp: 2s
 etcd:
   endpoints: ["127.0.0.1:2379"]
   dial_timeout: 5s
-  username: toto
-  password: titi
+  username: lxd2etcd
+  password: secret
+containers:
+  test1:
+    node_ip: 10.255.16.1
+    default_interface: eth0
+  test2:
+    node_ip: 10.255.16.2
+    default_interface: eth0
 ...

@@ -9,6 +9,8 @@ import (
 	"github.com/palantir/stacktrace"
 )
 
+// LxdEventHandler is run for each received event from LXD.
+// It triggers a config refresh according to the event.
 var LxdEventHandler = func(refreshChan chan struct{}, event api.Event) error {
 	var (
 		err       error
@@ -31,6 +33,7 @@ var LxdEventHandler = func(refreshChan chan struct{}, event api.Event) error {
 	return nil
 }
 
+// LxdEventToString returns a human readable representation of an LXD api event.
 func LxdEventToString(event api.Event) string {
 	var (
 		builder strings.Builder
