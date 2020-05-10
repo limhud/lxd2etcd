@@ -6,6 +6,7 @@ package config
 import (
 	"fmt"
 	"io/ioutil"
+	"net"
 	"reflect"
 	"sync"
 	"time"
@@ -14,8 +15,6 @@ import (
 	"github.com/palantir/stacktrace"
 	"gopkg.in/yaml.v2"
 )
-
-// TODO: add validation
 
 var (
 	lock              sync.Mutex
@@ -26,13 +25,26 @@ var (
 )
 
 // --- Containers section
+
+// ContainerData contains extraneous data added or used to add information to container data in etcd
+// DefaultInterface is used in default_ipv4 and default_ipv6 fields creation.
 type ContainerData struct {
 	NodeIP           string `yaml:"node_ip"`
 	DefaultInterface string `yaml:"default_interface"`
 }
 
+func (data *ContainerData) validate() error {
+	if data.NodeIP != "" && net.ParseIP(data.NodeIP) == nil {
+		return stacktrace.NewError("<%s> is not a valid IP address for <node_ip>", data.NodeIP)
+	}
+	return nil
+}
+
+// ContainersConfig is a map of ContainerData indexed by container name.
 type ContainersConfig map[string]ContainerData
 
+// Get method returns the container data for a given container.
+// If no data exists for this container, it returns an empty ContainerData instance.
 func (containers *ContainersConfig) Get(containerName string) *ContainerData {
 	var (
 		data ContainerData
@@ -45,6 +57,22 @@ func (containers *ContainersConfig) Get(containerName string) *ContainerData {
 	return &data
 }
 
+func (containers *ContainersConfig) validate() error {
+	var (
+		err           error
+		containerName string
+		containerData ContainerData
+	)
+	for containerName, containerData = range *containers {
+		err = containerData.validate()
+		if err != nil {
+			return stacktrace.Propagate(err, "fail to validate container data for container <%s>", containerName)
+		}
+	}
+	return nil
+}
+
+// Equal tests if the current ContainersConfig contains the same values as the ContainersConfig in argument.
 func (containers *ContainersConfig) Equal(comparedWith *ContainersConfig) error {
 	var (
 		key           string
@@ -73,6 +101,7 @@ func (containers *ContainersConfig) Equal(comparedWith *ContainersConfig) error 
 	return nil
 }
 
+// Copy returns a copy of the object.
 func (containers *ContainersConfig) Copy() *ContainersConfig {
 	var (
 		copyCfg ContainersConfig
@@ -92,6 +121,16 @@ func (containers *ContainersConfig) Copy() *ContainersConfig {
 type LxdConfig struct {
 	Socket      string        `yaml:"socket"`
 	WaitForDHCP time.Duration `yaml:"wait_for_dhcp"`
+}
+
+func (lxd *LxdConfig) validate() error {
+	if lxd.Socket == "" {
+		return stacktrace.NewError("<socket> field is required")
+	}
+	if lxd.WaitForDHCP == 0 {
+		return stacktrace.NewError("<wait_for_dhcp> field is required and should not be 0")
+	}
+	return nil
 }
 
 // Equal tests if content is the same
@@ -124,6 +163,16 @@ type EtcdConfig struct {
 	DialTimeout time.Duration `yaml:"dial_timeout"`
 	Username    string        `yaml:"username"`
 	Password    string        `yaml:"password"`
+}
+
+func (etcd *EtcdConfig) validate() error {
+	if len(etcd.Endpoints) < 1 {
+		return stacktrace.NewError("<endpoints> field is required")
+	}
+	if etcd.DialTimeout == 0 {
+		return stacktrace.NewError("<dial_timeout> field is required and cannot be <0>")
+	}
+	return nil
 }
 
 // Equal tests if content is the same
@@ -165,6 +214,28 @@ type Config struct {
 	Lxd        LxdConfig        `yaml:"lxd"`
 	Etcd       EtcdConfig       `yaml:"etcd"`
 	Containers ContainersConfig `yaml:"containers"`
+}
+
+func (c *Config) validate() error {
+	var (
+		err error
+	)
+	if c.Hostname == "" {
+		return stacktrace.NewError("<hostname> is required")
+	}
+	err = c.Lxd.validate()
+	if err != nil {
+		return stacktrace.Propagate(err, "fail to validate <lxd> section")
+	}
+	err = c.Etcd.validate()
+	if err != nil {
+		return stacktrace.Propagate(err, "fail to validate <etcd> section")
+	}
+	err = c.Containers.validate()
+	if err != nil {
+		return stacktrace.Propagate(err, "fail to validate <containers> section")
+	}
+	return nil
 }
 
 // String returns a string representing a config struct.
@@ -209,8 +280,9 @@ func SetConfigFile(path string) {
 // ReadInConfig triggers the reading of the config from the file.
 func ReadInConfig() error {
 	var (
-		err  error
-		data []byte
+		err       error
+		data      []byte
+		tmpConfig Config
 	)
 
 	lock.Lock()
@@ -223,11 +295,17 @@ func ReadInConfig() error {
 	}
 
 	loggo.GetLogger("").Debugf("config file <%s> read successfully", configFilePath)
-	err = yaml.Unmarshal(data, &Configuration)
+	err = yaml.Unmarshal(data, &tmpConfig)
 	if err != nil {
 		return stacktrace.Propagate(err, "parsing error in <%s>", configFilePath)
 	}
 	loggo.GetLogger("").Debugf("config file <%s> parsed successfully", configFilePath)
+	err = tmpConfig.validate()
+	if err != nil {
+		return stacktrace.Propagate(err, "fail to validate <%s>", configFilePath)
+	}
+
+	Configuration = tmpConfig
 
 	if !immutableLogLevel {
 		if Configuration.Debug {

@@ -115,13 +115,12 @@ deb: build_linux packaging_clean dockerpackager
 		cp -v configs/lxd2etcd.yml $(PACKAGING_TMP_DIR)/rootfs/etc && \
 		cp -v build/package/man/*.1 $(PACKAGING_TMP_DIR)/rootfs/usr/share/man/man1 && \
 		cp -v build/package/man/*.5 $(PACKAGING_TMP_DIR)/rootfs/usr/share/man/man5 && \
-		cp -v $(BIN_PATH)/lxd2etcd $(PACKAGING_TMP_DIR)/rootfs/usr/bin/lxd2etcd && \
+		cp -v $(BIN_PATH)/lxd2etcd $(PACKAGING_TMP_DIR)/rootfs/usr/bin/lxd2etcd) && \
 		$(call mesg_ok) || $(call mesg_fail)
 	@$(call mesg_start,deb,Building package for debian:$(DIST_VERSION)...)
 	@(docker run --user $(USER) --rm=true -v "$(WORKDIR)/$(PACKAGING_TMP_DIR):/src/" fpm-debian:$(DIST_VERSION) fpm -s dir -t deb -n lxd2etcd -v $(VERSION) \
-		--description "Populate etcd with lxd infos" -a all --category misc --vendor limhud --license MIT \
+		--description "Daemon populating etcd with lxd infos" -a all --category misc --vendor limhud --license MIT \
 		--prefix=/ -C /src/rootfs \
-		--depends quota --depends passwd\
 		--deb-systemd /src/lxd2etcd.service \
 		--after-install /src/scripts/after-install.deb.sh --before-remove /src/scripts/before-remove.deb.sh --after-remove /src/scripts/after-remove.deb.sh .) && \
 	$(call mesg_ok) || $(call mesg_fail)
