@@ -1,9 +1,10 @@
 VERSION := 0.1
 
-DIST_VERSION = 10
+DIST_VERSION = 11
 
 BUILD_DATE := $(shell date +%F_%R)
 BUILD_HASH := $(shell git rev-parse --short HEAD)
+GO_VERSION := $(shell go version | cut -d ' ' -f 3)
 TMP_DIR= tmp
 BUILD_DIR = $(TMP_DIR)/build
 PACKAGING_TMP_DIR = $(TMP_DIR)/packaging
@@ -12,7 +13,6 @@ COVERAGE_DIR = ${TMP_DIR}/coverage
 WORKDIR := $(shell pwd)
 USER := $(shell id -u)
 
-GO ?= go
 GOTEST ?= gotest
 GODEBUG ?= dlv
 
@@ -24,7 +24,7 @@ GOVET_ARGS =
 
 BIN_PATH := $(BUILD_DIR)/bin
 BIN_LIST = $(patsubst cmd/%,%,$(wildcard cmd/*))
-PKG_LIST = "internal/lxdlistener" "internal/config"
+PKG_LIST = "internal/lxd2etcd" "internal/config"
 TESTING_PKG_LIST = $(wildcard internal/testing/*)
 
 mesg_start = echo "$(shell tty -s && tput setaf 4)$(1):$(shell tty -s && tput sgr0) $(2)"
@@ -58,7 +58,7 @@ build_debug: prepare_build
 	$(call mesg_ok) || $(call mesg_fail)
 	@(for bin in $(BIN_LIST); do \
 		$(call mesg_start,build,Building $$bin binary...); \
-		$(GO) build -v \
+		go build -v \
 		-gcflags "all=-N -l" \
 		-ldflags=all="\
 		-X main.version=$(VERSION) \
@@ -69,14 +69,23 @@ build_debug: prepare_build
 		$(call mesg_ok) || $(call mesg_fail); \
 		done)
 
+dockerbuilder:
+ifdef BUILD_WITH_DOCKER
+	@$(call mesg_start,dockerbuild,Building image for go-debian:$(DIST_VERSION) with go version $(GO_VERSION))
+	@(cd build/go-debian/$(DIST_VERSION)/ && docker build --build-arg=go_version=$(GO_VERSION) -t go-debian:$(DIST_VERSION) .) && \
+		$(call mesg_ok) || $(call mesg_fail)
+endif
 
-build_linux: prepare_build
+build_linux: prepare_build dockerbuilder
+ifdef BUILD_WITH_DOCKER
+	$(eval DOCKER_BUILD = docker run --user $(USER) --rm=true -e "GOPATH=${GOPATH}" -e "HOME=/tmp" -v "${GOPATH}:${GOPATH}" -w "${PWD}" go-debian:$(DIST_VERSION))
+endif
 	@$(call mesg_start,build,Preparing vendor directory...)
 	@go mod vendor && \
 	$(call mesg_ok) || $(call mesg_fail)
 	@(for bin in $(BIN_LIST); do \
 		$(call mesg_start,build,Building $$bin binary...); \
-		$(GO) build -v \
+		$(DOCKER_BUILD) go build -v \
 		-ldflags=all="-s -w \
 		-X main.version=$(VERSION) \
 		-X main.buildDate=$(BUILD_DATE) \
@@ -87,14 +96,21 @@ build_linux: prepare_build
 		done)
 
 check:
-	@for pkg in $(PKG_LIST) $(BIN_LIST:%=cmd/%) $(TESTING_PKG_LIST); do \
-		$(call mesg_start,lint,Checking $$pkg sources...); \
-		$(GOLINT) $(GOLINT_ARGS) ./$$pkg && \
-		$(call mesg_ok) || $(call mesg_fail); \
-		$(call mesg_start,vet,Checking $$pkg sources...); \
-		$(GOVET) $(GOVET_ARGS) ./$$pkg && \
-		$(call mesg_ok) || $(call mesg_fail); \
-		done
+	@(for pkg in $(PKG_LIST) $(BIN_LIST:%=cmd/%) $(TESTING_PKG_LIST); do \
+    $(call mesg_start,lint,Checking $$pkg sources...); \
+    $(GOLINT) $(GOLINT_ARGS) ./$$pkg && \
+    $(call mesg_ok) || $(call mesg_fail); \
+    $(call mesg_start,vet,Checking $$pkg sources...); \
+    $(GOVET) $(GOVET_ARGS) ./$$pkg && \
+    $(call mesg_ok) || $(call mesg_fail); \
+    done)
+	@$(call mesg_start,staticcheck,Checking...)
+	@(staticcheck ./...) && \
+	$(call mesg_ok) || $(call mesg_fail)
+	@$(call mesg_start,gosec,Checking...)
+	@(gosec ./...) && \
+	$(call mesg_ok) || $(call mesg_fail)
+
 
 packaging_clean:
 	@$(call mesg_start,deb,Cleaning $(PACKAGING_TMP_DIR)...)
@@ -125,7 +141,7 @@ deb: build_linux packaging_clean dockerpackager
 		--after-install /src/scripts/after-install.deb.sh --before-remove /src/scripts/before-remove.deb.sh --after-remove /src/scripts/after-remove.deb.sh .) && \
 	$(call mesg_ok) || $(call mesg_fail)
 
-test: dependency
+test:
 	@for pkg in $(PKG_LIST); do \
 		$(call mesg_start,test,Testing $$pkg...); \
 		install -d -m 0755 $(COVERAGE_DIR)/$$(dirname $$pkg) && \
@@ -134,6 +150,6 @@ test: dependency
 		done
 	@for pkg in $(PKG_LIST); do \
 		$(call mesg_start,test,Generating html report for $$pkg...); \
-		$(GO) tool cover -html=$(COVERAGE_DIR)/$$pkg.test -o $(COVERAGE_DIR)/$$pkg.test.html && \
+		go tool cover -html=$(COVERAGE_DIR)/$$pkg.test -o $(COVERAGE_DIR)/$$pkg.test.html && \
 		$(call mesg_ok) || $(call mesg_fail); \
 		done

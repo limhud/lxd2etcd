@@ -66,7 +66,7 @@ func main() {
 
 	if err = flagSet.Parse(os.Args...); err != nil {
 		fmt.Printf("Error: %s\n", err)
-		flagSet.Help(false)
+		flagSet.Help()
 		os.Exit(1)
 	}
 

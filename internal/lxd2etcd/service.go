@@ -25,10 +25,7 @@ type Service struct {
 
 // NewService returns a new service instance.
 func NewService() (*Service, error) {
-	var (
-		service *Service
-	)
-	service = &Service{}
+	service := &Service{}
 	service.initialized = false
 	service.errorChan = make(chan error)
 	service.refreshChan = make(chan struct{})
