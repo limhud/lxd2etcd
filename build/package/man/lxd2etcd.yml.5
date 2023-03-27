@@ -37,6 +37,10 @@ The path to the lxd unix socket. (ex: /var/snap/lxd/common/lxd/unix.socket)
 When a container is created, its dhcp ip is not already assigned.
 In order to get the assigned IP, lxd2etcd wait for a short period of time after receiving the creation event.
 This value configure how much time do lxd2etcd wait before retrieving the configuration from lxd. (ex: 2s)
+.TP
+.BR periodic_refresh
+.br
+Force a periodic refresh every given period of time (ex: 1m).
 .RE
 
 .TP

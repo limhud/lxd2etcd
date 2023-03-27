@@ -4,6 +4,7 @@ hostname: test.example.net
 lxd:
   socket: /var/snap/lxd/common/lxd/unix.socket
   wait_for_dhcp: 2s
+  periodic_refresh: 1m
 etcd:
   endpoints: ["127.0.0.1:2379"]
   dial_timeout: 5s

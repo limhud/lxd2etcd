@@ -7,7 +7,7 @@ import (
 	"github.com/limhud/lxd2etcd/internal/config"
 
 	"github.com/juju/loggo"
-	"github.com/lxc/lxd/client"
+	lxd "github.com/lxc/lxd/client"
 	"github.com/lxc/lxd/shared/api"
 	"github.com/palantir/stacktrace"
 	"go.etcd.io/etcd/clientv3"
@@ -28,7 +28,7 @@ func NewService() (*Service, error) {
 	service := &Service{}
 	service.initialized = false
 	service.errorChan = make(chan error)
-	service.refreshChan = make(chan struct{})
+	service.refreshChan = make(chan struct{}, 1000)
 	return service, nil
 }
 
@@ -106,23 +106,23 @@ func (service *Service) init(ctx context.Context) error {
 		return stacktrace.Propagate(err, "fail to initialize lxd client")
 	}
 	loggo.GetLogger("").Debugf("lxd client initialized")
-	service.lxdEventListener, err = service.lxdInstanceServer.GetEvents()
+	service.lxdEventListener, err = service.lxdInstanceServer.GetEventsAllProjects()
 	if err != nil {
 		return stacktrace.Propagate(err, "fail to initialize lxd event listener")
 	}
 	// initialize lxd listener handler
-	_, err = service.lxdEventListener.AddHandler([]string{"operation"}, func(event api.Event) {
+	_, err = service.lxdEventListener.AddHandler([]string{"lifecycle"}, func(event api.Event) {
 		var (
 			err error
 		)
 		loggo.GetLogger("").Tracef("event <%s>: <%s>", eventName, LxdEventToString(event))
-		err = LxdEventHandler(service.refreshChan, event)
+		err = HandleLxdEvent(service.refreshChan, event)
 		if err != nil {
 			service.errorChan <- err
 		}
 	})
 	if err != nil {
-		return stacktrace.Propagate(err, "fail to add event handler for <operation> event type")
+		return stacktrace.Propagate(err, "fail to add event handler for <lifecycle> event type")
 	}
 	loggo.GetLogger("").Debugf("lxd event handlers installed")
 	// initialize etcd client
@@ -179,32 +179,76 @@ func (service *Service) Start(ctx context.Context) error {
 		err                   error
 		lxdInfo               *LxdInfo
 		processingTriggerChan chan struct{}
-		timer                 *time.Timer
+		ticker                *time.Ticker
+		emptyChanTimer        *time.Timer
+		waitForDHCPTimer      *time.Timer
 	)
-	processingTriggerChan = make(chan struct{})
+	processingTriggerChan = make(chan struct{}, 1)
+	ticker = time.NewTicker(config.GetLxd().PeriodicRefresh)
+	defer ticker.Stop()
+	emptyChanTimer = time.NewTimer(time.Second)
+	defer emptyChanTimer.Stop()
+	waitForDHCPTimer = time.AfterFunc(config.GetLxd().WaitForDHCP, func() {
+		select {
+		case processingTriggerChan <- struct{}{}:
+			loggo.GetLogger("").Infof("refresh triggered by automatic wait for dhcp")
+		default: // chan is already full, no need to trigger refresh
+			loggo.GetLogger("").Tracef("automatic wait for dhcp cancelled because chan is already full")
+		}
+	})
+	waitForDHCPTimer.Stop()
+	defer waitForDHCPTimer.Stop()
 ServiceLoop:
 	for {
 		initServiceWithRetries(ctx, service)
-		timer = time.AfterFunc(config.GetLxd().WaitForDHCP, func() {
-			processingTriggerChan <- struct{}{}
-		})
+		// trigger initial refresh
+		processingTriggerChan <- struct{}{}
 	RefreshLoop:
 		for {
+			loggo.GetLogger("").Tracef("waiting for refresh")
 			select {
 			case <-ctx.Done():
 				loggo.GetLogger("").Infof("stopping service...")
 				break ServiceLoop
+			case <-ticker.C:
+				select {
+				case processingTriggerChan <- struct{}{}:
+					loggo.GetLogger("").Infof("refresh triggered by ticker")
+				default:
+					loggo.GetLogger("").Tracef("ticker refresh cancelled because chan is already full")
+					// chan is already full, do not block.
+				}
 			case <-service.refreshChan:
-				loggo.GetLogger("").Infof("refresh triggered")
-				timer.Stop()
-				timer = time.AfterFunc(config.GetLxd().WaitForDHCP, func() {
-					processingTriggerChan <- struct{}{}
-				})
+				// empty refreshChan
+				if !emptyChanTimer.Stop() {
+					<-emptyChanTimer.C
+				}
+				emptyChanTimer.Reset(time.Second) // start timer limiting the time for flushing events
+			EmptyChanLoop:
+				for {
+					select {
+					case <-service.refreshChan:
+					case <-emptyChanTimer.C: // too much time flushing events
+						loggo.GetLogger("").Tracef("too much time flushing events, stopping here.")
+						break EmptyChanLoop
+					default: // no more event to flush
+						break EmptyChanLoop
+					}
+				}
+				// non blocking send
+				select {
+				case processingTriggerChan <- struct{}{}:
+				default:
+					// chan is already full meaning a refresh is already pending, so we do not need to append a new refresh.
+				}
+				loggo.GetLogger("").Infof("refresh triggered by event")
+				waitForDHCPTimer.Reset(config.GetLxd().WaitForDHCP)
 			case <-processingTriggerChan:
 				if !service.initialized {
 					loggo.GetLogger("").Warningf("cancelling triggered processing before service initialization")
 					continue
 				}
+				loggo.GetLogger("").Tracef("processing refresh")
 				lxdInfo = &LxdInfo{}
 				err = lxdInfo.Populate(service.lxdInstanceServer)
 				if err != nil {

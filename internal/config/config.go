@@ -5,8 +5,8 @@ package config
 
 import (
 	"fmt"
-	"io/ioutil"
 	"net"
+	"os"
 	"reflect"
 	"sync"
 	"time"
@@ -119,8 +119,9 @@ func (containers *ContainersConfig) Copy() *ContainersConfig {
 
 // LxdConfig represents the unix socket configuration
 type LxdConfig struct {
-	Socket      string        `yaml:"socket"`
-	WaitForDHCP time.Duration `yaml:"wait_for_dhcp"`
+	Socket          string        `yaml:"socket"`
+	WaitForDHCP     time.Duration `yaml:"wait_for_dhcp"`
+	PeriodicRefresh time.Duration `yaml:"periodic_refresh"`
 }
 
 func (lxd *LxdConfig) validate() error {
@@ -129,6 +130,9 @@ func (lxd *LxdConfig) validate() error {
 	}
 	if lxd.WaitForDHCP == 0 {
 		return stacktrace.NewError("<wait_for_dhcp> field is required and should not be 0")
+	}
+	if lxd.PeriodicRefresh == 0 {
+		return stacktrace.NewError("<periodic_refresh> field is required and should not be 0")
 	}
 	return nil
 }
@@ -144,14 +148,18 @@ func (lxd *LxdConfig) Equal(comparedWith *LxdConfig) error {
 	if lxd.WaitForDHCP != comparedWith.WaitForDHCP {
 		return stacktrace.NewError("WaitForDHCP value <%s> is different: <%s>", lxd.WaitForDHCP, comparedWith.WaitForDHCP)
 	}
+	if lxd.PeriodicRefresh != comparedWith.PeriodicRefresh {
+		return stacktrace.NewError("PeriodicRefresh value <%s> is different: <%s>", lxd.PeriodicRefresh, comparedWith.PeriodicRefresh)
+	}
 	return nil
 }
 
 // Copy returns a copy of the object
 func (lxd *LxdConfig) Copy() *LxdConfig {
 	return &LxdConfig{
-		Socket:      lxd.Socket,
-		WaitForDHCP: lxd.WaitForDHCP,
+		Socket:          lxd.Socket,
+		WaitForDHCP:     lxd.WaitForDHCP,
+		PeriodicRefresh: lxd.PeriodicRefresh,
 	}
 }
 
@@ -289,7 +297,7 @@ func ReadInConfig() error {
 	defer lock.Unlock()
 
 	//read file and unmarshal yaml
-	data, err = ioutil.ReadFile(configFilePath)
+	data, err = os.ReadFile(configFilePath)
 	if err != nil {
 		return stacktrace.Propagate(err, "fail to read <%s>", configFilePath)
 	}

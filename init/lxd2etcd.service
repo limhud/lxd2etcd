@@ -11,6 +11,7 @@ User=lxd2etcd
 Group=lxd2etcd
 ExecStart=/usr/bin/lxd2etcd -c /etc/lxd2etcd.yml
 Restart=on-failure
+TimeoutStopSec=15s
 
 [Install]
 WantedBy=multi-user.target
